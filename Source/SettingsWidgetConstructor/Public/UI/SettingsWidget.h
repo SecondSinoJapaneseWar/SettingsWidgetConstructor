@@ -22,10 +22,15 @@ class SETTINGSWIDGETCONSTRUCTOR_API USettingsWidget : public UUserWidget
 	 * --------------------------------------------------- */
 public:
 	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnToggledSettings, bool, bIsVisible);
+	DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnPendingSettingsChanged, bool, bHasPendingChanges);
 
 	/** Is called to notify listeners the Settings widget is opened or closed. */
 	UPROPERTY(BlueprintCallable, BlueprintAssignable, Category = "Settings Widget Constructor")
 	FOnToggledSettings OnToggledSettings;
+
+	/** Is called when the menu becomes dirty or returns to its opened state. */
+	UPROPERTY(BlueprintCallable, BlueprintAssignable, Category = "Settings Widget Constructor")
+	FOnPendingSettingsChanged OnPendingSettingsChanged;
 
 	/* ---------------------------------------------------
 	 *		Public functions
@@ -46,6 +51,22 @@ public:
 	/** Save and close the settings widget. */
 	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor")
 	void CloseSettings();
+
+	/** Apply, persist, and close the settings menu. */
+	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor")
+	void AcceptSettings();
+
+	/** Restore the values captured when the menu was opened and close without saving. */
+	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor")
+	void CancelSettings();
+
+	/** Restore game defaults without saving; Accept commits them and Cancel rolls them back. */
+	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor")
+	void RestoreDefaultSettings();
+
+	/** Whether one or more settings differ from the state captured on open. */
+	UFUNCTION(BlueprintPure, Category = "Settings Widget Constructor")
+	FORCEINLINE bool HasPendingChanges() const { return bHasPendingChangesInternal; }
 
 	/** Is called on closed settings on UI. */
 	UFUNCTION(BlueprintImplementableEvent, Category = "Settings Widget Constructor")
@@ -232,6 +253,10 @@ protected:
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Transient, Category = "Settings Widget Constructor", meta = (BlueprintProtected, DisplayName = "Settings Table Rows"))
 	TMap<FName/*Tag*/, FSettingsPicker/*Row*/> SettingsTableRowsInternal;
 
+	/** Stable display order; TMap iteration order is intentionally not used for layout. */
+	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Transient, Category = "Settings Widget Constructor", meta = (BlueprintProtected, DisplayName = "Ordered Setting Tags"))
+	TArray<FName> OrderedSettingTagsInternal;
+
 	/** Contains all Setting tags that failed to bind their Getter/Setter functions on initial construct, so it's stored to be rebound later.
 	 * @see USettingsWidget::TryRebindDeferredContexts */
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadWrite, Transient, AdvancedDisplay, Category = "Settings Widget Constructor", meta = (BlueprintProtected, DisplayName = "DeferredBindings"))
@@ -253,6 +278,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Settings Widget Constructor|Widgets")
 	FORCEINLINE class UVerticalBox* GetFooterVerticalBox() const { return FooterVerticalBox; }
 
+	/** Returns the horizontal panel used by footer actions. */
+	UFUNCTION(BlueprintPure, Category = "Settings Widget Constructor|Widgets")
+	class UPanelWidget* GetFooterPanel() const;
+
 protected:
 	/** The section in the top margin of Settings, usually contains a title. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Transient, AdvancedDisplay, Category = "Settings Widget Constructor|Widgets", meta = (BlueprintProtected, BindWidget))
@@ -266,6 +295,17 @@ protected:
 	UPROPERTY(VisibleAnywhere, BlueprintReadWrite, Transient, AdvancedDisplay, Category = "Settings Widget Constructor|Widgets", meta = (BlueprintProtected, BindWidget))
 	TObjectPtr<class UVerticalBox> FooterVerticalBox = nullptr;
 
+	/** Runtime-created footer row so Apply/Cancel/Defaults are laid out side-by-side. */
+	UPROPERTY(Transient)
+	TObjectPtr<class UHorizontalBox> FooterButtonBoxInternal = nullptr;
+
+	/** Values captured when opening, used for real cancel semantics. */
+	TMap<FName, FString> OpenedSettingValuesInternal;
+
+	bool bHasPendingChangesInternal = false;
+	bool bIsSynchronizingSettingsInternal = false;
+	bool bSuppressChangeNotificationsInternal = false;
+
 	/* ---------------------------------------------------
 	*		Protected functions
 	* --------------------------------------------------- */
@@ -276,6 +316,9 @@ protected:
 
 	/** Called when the widget is removed from the viewport. */
 	virtual void NativeDestruct() override;
+
+	/** Escape cancels; Enter accepts when the menu itself owns keyboard focus. */
+	virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
 
 	/** Is called right after the game was started and windows size is set to construct settings. */
 	void OnViewportResizedWhenInit(class FViewport* Viewport, uint32 Index);
@@ -296,6 +339,15 @@ protected:
 	/** Is called when In-Game menu became opened or closed. */
 	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor", meta = (BlueprintProtected))
 	void OnToggleSettings(bool bIsVisible);
+
+	/** Creates the footer action row once the Blueprint hierarchy is ready. */
+	void EnsureFooterButtonBox();
+
+	/** Capture/compare helpers for Apply, Accept, Cancel, and Defaults. */
+	void CaptureCurrentSettingValues();
+	void RefreshPendingChanges();
+	void SetHasPendingChanges(bool bNewValue);
+	void HideSettings();
 
 	/** Automatically sets the height for all scrollboxes in the Settings. */
 	UFUNCTION(BlueprintCallable, Category = "Settings Widget Constructor", meta = (BlueprintProtected))

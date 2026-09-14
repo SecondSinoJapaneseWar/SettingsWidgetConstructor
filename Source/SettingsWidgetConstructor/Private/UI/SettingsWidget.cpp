@@ -12,13 +12,18 @@
 // UE
 #include "Blueprint/WidgetLayoutLibrary.h"
 #include "Components/SizeBox.h"
+#include "Components/HorizontalBox.h"
+#include "Components/VerticalBoxSlot.h"
 #include "Components/Viewport.h"
+#include "Blueprint/WidgetTree.h"
 #include "DataRegistry.h"
 #include "DataRegistryTypes.h"
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/Texture.h"
 #include "GameFramework/GameUserSettings.h"
+#include "GameplayTagsManager.h"
+#include "InputCoreTypes.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -37,21 +42,45 @@ const FSettingsPicker& USettingsWidget::FindSettingRow(FName PotentialTagName) c
 		return FSettingsPicker::Empty;
 	}
 
-	const FSettingsPicker* FoundRow = &FSettingsPicker::Empty;
+	if (const FSettingsPicker* ExactRow = SettingsTableRowsInternal.Find(PotentialTagName))
+	{
+		return *ExactRow;
+	}
 
-	// Find row by specified substring
-	const FString TagSubString(PotentialTagName.ToString());
+	const FString TagSubString = PotentialTagName.ToString();
+	const FString TagSuffix = FString(TEXT(".")) + TagSubString;
+	const FSettingsPicker* FoundRow = nullptr;
+	int32 MatchCount = 0;
+
+	// Prefer a unique leaf/suffix match, e.g. "VSync" -> "Settings.Checkbox.VSync".
 	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
 	{
-		const FString TagStringIt(RowIt.Key.ToString());
-		if (TagStringIt.Contains(TagSubString))
+		const FString TagStringIt = RowIt.Key.ToString();
+		if (TagStringIt.Equals(TagSubString) || TagStringIt.EndsWith(TagSuffix))
 		{
 			FoundRow = &RowIt.Value;
-			break;
+			++MatchCount;
 		}
 	}
 
-	return *FoundRow;
+	if (MatchCount == 1)
+	{
+		return *FoundRow;
+	}
+
+	// Preserve the legacy convenience only when the substring is unambiguous.
+	FoundRow = nullptr;
+	MatchCount = 0;
+	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+	{
+		if (RowIt.Key.ToString().Contains(TagSubString))
+		{
+			FoundRow = &RowIt.Value;
+			++MatchCount;
+		}
+	}
+
+	return MatchCount == 1 ? *FoundRow : FSettingsPicker::Empty;
 }
 
 // Returns the found row by specified tag
@@ -71,13 +100,30 @@ void USettingsWidget::SaveSettings()
 {
 	ApplySettings();
 
+	UGameUserSettings* GameUserSettings = USettingsUtilsLibrary::GetGameUserSettings();
+	if (GameUserSettings)
+	{
+		GameUserSettings->ConfirmVideoMode();
+		GameUserSettings->SaveSettings();
+	}
+
+	TSet<UObject*> SavedOwners;
 	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
 	{
 		if (UObject* ContextObject = RowIt.Value.PrimaryData.GetSettingOwner(this))
 		{
-			ContextObject->SaveConfig();
+			if (ContextObject != GameUserSettings
+				&& ContextObject != this
+				&& !SavedOwners.Contains(ContextObject))
+			{
+				ContextObject->SaveConfig();
+				SavedOwners.Add(ContextObject);
+			}
 		}
 	}
+
+	CaptureCurrentSettingValues();
+	SetHasPendingChanges(false);
 }
 
 // Apply all current settings on device
@@ -90,7 +136,9 @@ void USettingsWidget::ApplySettings()
 	}
 
 	constexpr bool bCheckForCommandLineOverrides = false;
-	GameUserSettings->ApplySettings(bCheckForCommandLineOverrides);
+	GameUserSettings->ApplyResolutionSettings(bCheckForCommandLineOverrides);
+	GameUserSettings->ApplyNonResolutionSettings();
+	GameUserSettings->RequestUIUpdate();
 }
 
 // Update settings on UI
@@ -102,17 +150,87 @@ void USettingsWidget::UpdateSettingsByTags(const FGameplayTagContainer& Settings
 		return;
 	}
 
+	// A data table can outlive a renamed/removed gameplay tag. Never let one
+	// stale row prevent every other setting from loading or updating.
+	FGameplayTagContainer RegisteredSettingsToUpdate;
+	for (const FGameplayTag& RequestedTag : SettingsToUpdate)
+	{
+		if (!RequestedTag.IsValid())
+		{
+			continue;
+		}
+
+		const FGameplayTag RegisteredTag =
+			UGameplayTagsManager::Get().RequestGameplayTag(RequestedTag.GetTagName(), false);
+		if (RegisteredTag.IsValid())
+		{
+			RegisteredSettingsToUpdate.AddTagFast(RegisteredTag);
+		}
+	}
+	if (RegisteredSettingsToUpdate.IsEmpty())
+	{
+		return;
+	}
+
+	const auto IsRequestedSetting = [&RegisteredSettingsToUpdate](const FSettingTag& SettingTag)
+	{
+		if (!SettingTag.IsValid())
+		{
+			return false;
+		}
+
+		const FGameplayTag RegisteredTag =
+			UGameplayTagsManager::Get().RequestGameplayTag(SettingTag.GetTagName(), false);
+		return RegisteredTag.IsValid()
+			&& RegisteredTag.MatchesAny(RegisteredSettingsToUpdate);
+	};
+
 	if (SettingsTableRowsInternal.IsEmpty())
 	{
 		CacheTable();
 	}
 
-	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+	if (bLoadFromConfig)
 	{
-		const FSettingsPicker& Setting = RowIt.Value;
+		TSet<UObject*> LoadedOwners;
+		for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+		{
+			const FSettingsPicker& Setting = RowIt.Value;
+			if (!IsRequestedSetting(Setting.PrimaryData.Tag))
+			{
+				continue;
+			}
+
+			UObject* Owner = Setting.PrimaryData.GetSettingOwner(this);
+			if (!Owner || LoadedOwners.Contains(Owner))
+			{
+				continue;
+			}
+
+			if (UGameUserSettings* GameUserSettings = Cast<UGameUserSettings>(Owner))
+			{
+				GameUserSettings->LoadSettings(false);
+			}
+			else
+			{
+				Owner->LoadConfig();
+			}
+			LoadedOwners.Add(Owner);
+		}
+	}
+
+	TGuardValue<bool> SynchronizingGuard(bIsSynchronizingSettingsInternal, true);
+	for (const FName& OrderedTag : OrderedSettingTagsInternal)
+	{
+		FSettingsPicker* SettingPtr = SettingsTableRowsInternal.Find(OrderedTag);
+		if (!SettingPtr)
+		{
+			continue;
+		}
+
+		FSettingsPicker& Setting = *SettingPtr;
 		const FSettingTag& SettingTag = Setting.PrimaryData.Tag;
-		if (!SettingTag.IsValid()
-		    || !SettingTag.MatchesAny(SettingsToUpdate))
+		if (!IsRequestedSetting(SettingTag))
 		{
 			continue;
 		}
@@ -130,10 +248,15 @@ void USettingsWidget::UpdateSettingsByTags(const FGameplayTagContainer& Settings
 			continue;
 		}
 
-		if (bLoadFromConfig)
+		if (Setting.SettingsType == GET_MEMBER_NAME_CHECKED(FSettingsPicker, Combobox))
 		{
-			// Obtain the latest value from configs and set it
-			Owner->LoadConfig();
+			TArray<FText> Members = Setting.Combobox.Members;
+			Setting.Combobox.OnGetMembers.ExecuteIfBound(Members);
+			Setting.Combobox.Members = Members;
+			if (USettingCombobox* ComboboxWidget = GetSettingSubWidget<USettingCombobox>(SettingTag))
+			{
+				ComboboxWidget->SetComboboxMembers(Members);
+			}
 		}
 
 		FString Result;
@@ -146,9 +269,12 @@ void USettingsWidget::UpdateSettingsByTags(const FGameplayTagContainer& Settings
 void USettingsWidget::UpdateAllSettings(bool bLoadFromConfig)
 {
 	FGameplayTagContainer AllSettingTags;
-	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+	for (const FName& OrderedTag : OrderedSettingTagsInternal)
 	{
-		AllSettingTags.AddTagFast(RowIt.Value.PrimaryData.Tag);
+		if (const FSettingsPicker* Row = SettingsTableRowsInternal.Find(OrderedTag))
+		{
+			AllSettingTags.AddTagFast(Row->PrimaryData.Tag);
+		}
 	}
 	UpdateSettingsByTags(AllSettingTags, bLoadFromConfig);
 }
@@ -195,34 +321,6 @@ void USettingsWidget::SetSettingValue(FName TagName, const FString& Value)
 	}
 }
 
-/** Executes the common pattern of setting a value, executing if bound, and updating the settings.
- * @param Tag The tag used to find the setting row.
- * @param DataMember The member that holds the desired value.
- * @param MemberValue The specific member to set the value to.
- * @param Value The new value to set.
- * @param SetterExpression The expression to update the setter delegate. */
-#define SET_SETTING_VALUE(Tag, DataMember, MemberValue, Value, SetterExpression)         \
-	do                                                                                   \
-	{                                                                                    \
-		if (!Tag.IsValid())                                                              \
-		{                                                                                \
-			return;                                                                      \
-		}                                                                                \
-		FSettingsPicker* FoundRowPtr = SettingsTableRowsInternal.Find(Tag.GetTagName()); \
-		if (!FoundRowPtr)                                                                \
-		{                                                                                \
-			return;                                                                      \
-		}                                                                                \
-		auto& Data = FoundRowPtr->DataMember;                                            \
-		if (Data.MemberValue == Value)                                                   \
-		{                                                                                \
-			return;                                                                      \
-		}                                                                                \
-		Data.MemberValue = Value;                                                        \
-		Data.SetterExpression.ExecuteIfBound(Value);                                     \
-		UpdateSettingsByTags(FoundRowPtr->PrimaryData.SettingsToUpdate);                 \
-	} while (0)
-
 // Press button
 void USettingsWidget::SetSettingButtonPressed(const FSettingTag& ButtonTag)
 {
@@ -241,23 +339,41 @@ void USettingsWidget::SetSettingButtonPressed(const FSettingTag& ButtonTag)
 
 	UpdateSettingsByTags(SettingsRowPtr->PrimaryData.SettingsToUpdate);
 
-	OnAnySettingSet(SettingsRowPtr->PrimaryData);
-
 	PlayUIClickSFX();
 }
 
 // Toggle checkbox
 void USettingsWidget::SetSettingCheckbox(const FSettingTag& CheckboxTag, bool InValue)
 {
-	SET_SETTING_VALUE(CheckboxTag, Checkbox, bIsSet, InValue, OnSetterBool);
+	if (!CheckboxTag.IsValid())
+	{
+		return;
+	}
+
+	FSettingsPicker* FoundRow = SettingsTableRowsInternal.Find(CheckboxTag.GetTagName());
+	if (!FoundRow)
+	{
+		return;
+	}
+
+	const bool bChanged = FoundRow->Checkbox.bIsSet != InValue;
+	FoundRow->Checkbox.bIsSet = InValue;
+	if (bChanged && !bIsSynchronizingSettingsInternal)
+	{
+		FoundRow->Checkbox.OnSetterBool.ExecuteIfBound(InValue);
+	}
 
 	if (USettingCheckbox* SettingCheckbox = GetSettingSubWidget<USettingCheckbox>(CheckboxTag))
 	{
 		SettingCheckbox->SetCheckboxValue(InValue);
-		OnAnySettingSet(SettingCheckbox->GetSettingPrimaryRow());
 	}
 
-	PlayUIClickSFX();
+	if (bChanged && !bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(FoundRow->PrimaryData.SettingsToUpdate);
+		OnAnySettingSet(FoundRow->PrimaryData);
+		PlayUIClickSFX();
+	}
 }
 
 // Set chosen member index for a combobox
@@ -268,12 +384,38 @@ void USettingsWidget::SetSettingComboboxIndex(const FSettingTag& ComboboxTag, in
 		return;
 	}
 
-	SET_SETTING_VALUE(ComboboxTag, Combobox, ChosenMemberIndex, InValue, OnSetterInt);
+	if (!ComboboxTag.IsValid())
+	{
+		return;
+	}
+
+	FSettingsPicker* FoundRow = SettingsTableRowsInternal.Find(ComboboxTag.GetTagName());
+	if (!FoundRow)
+	{
+		return;
+	}
+
+	if (!FoundRow->Combobox.Members.IsEmpty())
+	{
+		InValue = FMath::Clamp(InValue, 0, FoundRow->Combobox.Members.Num() - 1);
+	}
+
+	const bool bChanged = FoundRow->Combobox.ChosenMemberIndex != InValue;
+	FoundRow->Combobox.ChosenMemberIndex = InValue;
+	if (bChanged && !bIsSynchronizingSettingsInternal)
+	{
+		FoundRow->Combobox.OnSetterInt.ExecuteIfBound(InValue);
+	}
 
 	if (USettingCombobox* SettingCombobox = GetSettingSubWidget<USettingCombobox>(ComboboxTag))
 	{
 		SettingCombobox->SetComboboxIndex(InValue);
-		OnAnySettingSet(SettingCombobox->GetSettingPrimaryRow());
+	}
+
+	if (bChanged && !bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(FoundRow->PrimaryData.SettingsToUpdate);
+		OnAnySettingSet(FoundRow->PrimaryData);
 	}
 }
 
@@ -281,14 +423,35 @@ void USettingsWidget::SetSettingComboboxIndex(const FSettingTag& ComboboxTag, in
 void USettingsWidget::SetSettingSlider(const FSettingTag& SliderTag, double InValue)
 {
 	static constexpr double MinValue = 0.0;
-	static constexpr float MaxValue = 1.0;
+	static constexpr double MaxValue = 1.0;
 	const double NewValue = FMath::Clamp(InValue, MinValue, MaxValue);
-	SET_SETTING_VALUE(SliderTag, Slider, ChosenValue, NewValue, OnSetterFloat);
+	if (!SliderTag.IsValid())
+	{
+		return;
+	}
+
+	FSettingsPicker* FoundRow = SettingsTableRowsInternal.Find(SliderTag.GetTagName());
+	if (!FoundRow)
+	{
+		return;
+	}
+
+	const bool bChanged = !FMath::IsNearlyEqual(FoundRow->Slider.ChosenValue, NewValue);
+	FoundRow->Slider.ChosenValue = NewValue;
+	if (bChanged && !bIsSynchronizingSettingsInternal)
+	{
+		FoundRow->Slider.OnSetterFloat.ExecuteIfBound(NewValue);
+	}
 
 	if (USettingSlider* SettingSlider = GetSettingSubWidget<USettingSlider>(SliderTag))
 	{
 		SettingSlider->SetSliderValue(NewValue);
-		OnAnySettingSet(SettingSlider->GetSettingPrimaryRow());
+	}
+
+	if (bChanged && !bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(FoundRow->PrimaryData.SettingsToUpdate);
+		OnAnySettingSet(FoundRow->PrimaryData);
 	}
 }
 
@@ -314,12 +477,20 @@ void USettingsWidget::SetSettingTextLine(const FSettingTag& TextLineTag, const F
 	}
 
 	CaptionRef = InValue;
-	SettingsRowPtr->TextLine.OnSetterText.ExecuteIfBound(InValue);
-	UpdateSettingsByTags(PrimaryRef.SettingsToUpdate);
+	if (!bIsSynchronizingSettingsInternal)
+	{
+		SettingsRowPtr->TextLine.OnSetterText.ExecuteIfBound(InValue);
+	}
 
 	if (USettingTextLine* SettingTextLine = Cast<USettingTextLine>(PrimaryRef.SettingSubWidget))
 	{
 		SettingTextLine->SetCaptionText(InValue);
+	}
+
+	if (!bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(PrimaryRef.SettingsToUpdate);
+		OnAnySettingSet(PrimaryRef);
 	}
 }
 
@@ -350,19 +521,25 @@ void USettingsWidget::SetSettingUserInput(const FSettingTag& UserInputTag, FName
 		// Limit the length of the string
 		const FString NewValueStr = InValue.ToString().Left(UserInputRef.MaxCharactersNumber);
 		InValue = *NewValueStr;
-
-		if (USettingUserInput* SettingUserInput = GetSettingSubWidget<USettingUserInput>(UserInputTag))
-		{
-			SettingUserInput->SetUserInputValue(InValue);
-			OnAnySettingSet(SettingUserInput->GetSettingPrimaryRow());
-		}
 	}
 
 	UserInputRef.UserInput = InValue;
-	UserInputRef.OnSetterName.ExecuteIfBound(InValue);
-	UpdateSettingsByTags(SettingsRowPtr->PrimaryData.SettingsToUpdate);
+	if (!bIsSynchronizingSettingsInternal)
+	{
+		UserInputRef.OnSetterName.ExecuteIfBound(InValue);
+	}
 
-	PlayUIClickSFX();
+	if (USettingUserInput* SettingUserInput = GetSettingSubWidget<USettingUserInput>(UserInputTag))
+	{
+		SettingUserInput->SetUserInputValue(InValue);
+	}
+
+	if (!bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(SettingsRowPtr->PrimaryData.SettingsToUpdate);
+		OnAnySettingSet(SettingsRowPtr->PrimaryData);
+		PlayUIClickSFX();
+	}
 }
 
 // Set new custom widget for setting by specified tag
@@ -387,15 +564,23 @@ void USettingsWidget::SetSettingCustomWidget(const FSettingTag& CustomWidgetTag,
 
 	CustomWidgetRef.Reset();
 	CustomWidgetRef = InCustomWidget;
-	SettingsRowPtr->CustomWidget.OnSetterWidget.ExecuteIfBound(InCustomWidget);
-	UpdateSettingsByTags(SettingsRowPtr->PrimaryData.SettingsToUpdate);
+	if (!bIsSynchronizingSettingsInternal)
+	{
+		SettingsRowPtr->CustomWidget.OnSetterWidget.ExecuteIfBound(InCustomWidget);
+	}
 
-	OnAnySettingSet(SettingsRowPtr->PrimaryData);
+	if (!bIsSynchronizingSettingsInternal && !bSuppressChangeNotificationsInternal)
+	{
+		UpdateSettingsByTags(SettingsRowPtr->PrimaryData.SettingsToUpdate);
+		OnAnySettingSet(SettingsRowPtr->PrimaryData);
+	}
 }
 
 // Is called after any setting is changed
 void USettingsWidget::OnAnySettingSet_Implementation(const FSettingsPrimary& SettingPrimaryRow)
 {
+	RefreshPendingChanges();
+
 	if (SettingPrimaryRow.bApplyImmediately)
 	{
 		ApplySettings();
@@ -613,6 +798,12 @@ FSlateBrush USettingsWidget::GetButtonBrush(ESettingsButtonState State)
 	return SlateBrush;
 }
 
+// Returns the horizontal footer action panel, with the original vertical box as a safe fallback
+UPanelWidget* USettingsWidget::GetFooterPanel() const
+{
+	return FooterButtonBoxInternal ? Cast<UPanelWidget>(FooterButtonBoxInternal) : Cast<UPanelWidget>(FooterVerticalBox);
+}
+
 /* ---------------------------------------------------
  *		Protected functions
  * --------------------------------------------------- */
@@ -636,6 +827,23 @@ void USettingsWidget::NativeDestruct()
 	Super::NativeDestruct();
 
 	RemoveAllSettings();
+}
+
+FReply USettingsWidget::NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent)
+{
+	if (InKeyEvent.GetKey() == EKeys::Escape)
+	{
+		CancelSettings();
+		return FReply::Handled();
+	}
+
+	if (InKeyEvent.GetKey() == EKeys::Enter)
+	{
+		AcceptSettings();
+		return FReply::Handled();
+	}
+
+	return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
 }
 
 // Is called right after the game was started and windows size is set to construct settings
@@ -662,11 +870,17 @@ void USettingsWidget::ConstructSettings()
 
 	// BP implementation to cache some data before creating subwidgets
 	OnConstructSettings();
+	EnsureFooterButtonBox();
 
 	FGameplayTagContainer AddedSettings;
-	for (TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+	for (const FName& OrderedTag : OrderedSettingTagsInternal)
 	{
-		FSettingsPicker& SettingRef = RowIt.Value;
+		FSettingsPicker* SettingPtr = SettingsTableRowsInternal.Find(OrderedTag);
+		if (!SettingPtr)
+		{
+			continue;
+		}
+		FSettingsPicker& SettingRef = *SettingPtr;
 		BindSetting(SettingRef);
 		AddSetting(SettingRef);
 		AddedSettings.AddTag(SettingRef.PrimaryData.Tag);
@@ -677,6 +891,7 @@ void USettingsWidget::ConstructSettings()
 	UpdateScrollBoxesHeight();
 
 	ApplySettings();
+	CaptureCurrentSettingValues();
 }
 
 // Internal function to cache setting rows from Settings Data Table
@@ -697,6 +912,16 @@ void USettingsWidget::CacheTable()
 		const FSettingsPicker& SettingsPicker = SettingRowIt.Value;
 		SettingsTableRowsInternal.Emplace(SettingRowIt.Key, SettingsPicker);
 	}
+
+	SettingRows.GetKeys(OrderedSettingTagsInternal);
+	OrderedSettingTagsInternal.Sort([this](const FName& Left, const FName& Right)
+	{
+		const FSettingsPicker* LeftRow = SettingsTableRowsInternal.Find(Left);
+		const FSettingsPicker* RightRow = SettingsTableRowsInternal.Find(Right);
+		const int32 LeftPriority = LeftRow ? LeftRow->PrimaryData.SortPriority : 0;
+		const int32 RightPriority = RightRow ? RightRow->PrimaryData.SortPriority : 0;
+		return LeftPriority == RightPriority ? Left.LexicalLess(Right) : LeftPriority < RightPriority;
+	});
 }
 
 // Clears all added settings
@@ -711,6 +936,9 @@ void USettingsWidget::RemoveAllSettings()
 		}
 	}
 	SettingsTableRowsInternal.Empty();
+	OrderedSettingTagsInternal.Empty();
+	OpenedSettingValuesInternal.Empty();
+	bHasPendingChangesInternal = false;
 
 	for (USettingColumn* ColumnIt : ColumnsInternal)
 	{
@@ -731,6 +959,82 @@ void USettingsWidget::OnToggleSettings(bool bIsVisible)
 	{
 		OnToggledSettings.Broadcast(bIsVisible);
 	}
+}
+
+void USettingsWidget::EnsureFooterButtonBox()
+{
+	if (FooterButtonBoxInternal || !FooterVerticalBox || !WidgetTree)
+	{
+		return;
+	}
+
+	FooterButtonBoxInternal = WidgetTree->ConstructWidget<UHorizontalBox>(
+		UHorizontalBox::StaticClass(), TEXT("SettingsFooterActions"));
+	if (UVerticalBoxSlot* FooterSlot = FooterVerticalBox->AddChildToVerticalBox(FooterButtonBoxInternal))
+	{
+		FooterSlot->SetHorizontalAlignment(HAlign_Fill);
+		FooterSlot->SetVerticalAlignment(VAlign_Center);
+		FooterSlot->SetPadding(FMargin(0.0f, 8.0f, 0.0f, 0.0f));
+	}
+}
+
+void USettingsWidget::CaptureCurrentSettingValues()
+{
+	OpenedSettingValuesInternal.Empty();
+	for (const FName& OrderedTag : OrderedSettingTagsInternal)
+	{
+		const FSettingsPicker* Setting = SettingsTableRowsInternal.Find(OrderedTag);
+		const FSettingsDataBase* ChosenData = Setting ? Setting->GetChosenSettingsData() : nullptr;
+		if (!Setting || !ChosenData || !ChosenData->CanUpdateSetting())
+		{
+			continue;
+		}
+
+		FString Value;
+		ChosenData->GetSettingValue(*this, Setting->PrimaryData.Tag, Value);
+		OpenedSettingValuesInternal.Add(OrderedTag, MoveTemp(Value));
+	}
+}
+
+void USettingsWidget::RefreshPendingChanges()
+{
+	bool bIsDirty = false;
+	for (const TTuple<FName, FString>& OpenedValue : OpenedSettingValuesInternal)
+	{
+		const FSettingsPicker* Setting = SettingsTableRowsInternal.Find(OpenedValue.Key);
+		const FSettingsDataBase* ChosenData = Setting ? Setting->GetChosenSettingsData() : nullptr;
+		if (!Setting || !ChosenData || !ChosenData->CanUpdateSetting())
+		{
+			continue;
+		}
+
+		FString CurrentValue;
+		ChosenData->GetSettingValue(*this, Setting->PrimaryData.Tag, CurrentValue);
+		if (CurrentValue != OpenedValue.Value)
+		{
+			bIsDirty = true;
+			break;
+		}
+	}
+	SetHasPendingChanges(bIsDirty);
+}
+
+void USettingsWidget::SetHasPendingChanges(bool bNewValue)
+{
+	if (bHasPendingChangesInternal == bNewValue)
+	{
+		return;
+	}
+
+	bHasPendingChangesInternal = bNewValue;
+	OnPendingSettingsChanged.Broadcast(bHasPendingChangesInternal);
+}
+
+void USettingsWidget::HideSettings()
+{
+	SetVisibility(ESlateVisibility::Collapsed);
+	OnToggleSettings(false);
+	OnCloseSettings();
 }
 
 // Bind and set static object delegate
@@ -761,6 +1065,7 @@ bool USettingsWidget::TryBindOwner(FSettingsPrimary& Primary)
 	checkf(ContextClass, TEXT("ERROR: [%i] %s:\n'ContextClass' is null!"), __LINE__, *FString(__FUNCTION__));
 
 	// Cache all functions that are contained in returned object
+	Primary.OwnerFunctionList.Reset();
 	for (TFieldIterator<UFunction> It(ContextClass, EFieldIteratorFlags::IncludeSuper); It; ++It)
 	{
 		const UFunction* FunctionIt = *It;
@@ -864,6 +1169,8 @@ void USettingsWidget::OpenSettings()
 	TryRebindDeferredContexts();
 
 	UpdateAllSettings();
+	CaptureCurrentSettingValues();
+	SetHasPendingChanges(false);
 
 	SetVisibility(ESlateVisibility::Visible);
 
@@ -874,7 +1181,7 @@ void USettingsWidget::OpenSettings()
 	OnOpenSettings();
 }
 
-// Save and close the settings widget
+// Backwards-compatible close behavior: commit current values
 void USettingsWidget::CloseSettings()
 {
 	if (!IsVisible()
@@ -884,13 +1191,59 @@ void USettingsWidget::CloseSettings()
 		return;
 	}
 
-	SetVisibility(ESlateVisibility::Collapsed);
+	AcceptSettings();
+}
+
+void USettingsWidget::AcceptSettings()
+{
+	if (!IsVisible() && !IsHovered())
+	{
+		return;
+	}
 
 	SaveSettings();
+	HideSettings();
+}
 
-	OnToggleSettings(false);
+void USettingsWidget::CancelSettings()
+{
+	if (!IsVisible() && !IsHovered())
+	{
+		return;
+	}
 
-	OnCloseSettings();
+	{
+		TGuardValue<bool> NotificationGuard(bSuppressChangeNotificationsInternal, true);
+		for (const FName& OrderedTag : OrderedSettingTagsInternal)
+		{
+			const FString* OpenedValue = OpenedSettingValuesInternal.Find(OrderedTag);
+			FSettingsPicker* Setting = SettingsTableRowsInternal.Find(OrderedTag);
+			FSettingsDataBase* ChosenData = Setting ? Setting->GetChosenSettingsData() : nullptr;
+			if (OpenedValue && Setting && ChosenData && ChosenData->CanUpdateSetting())
+			{
+				ChosenData->SetSettingValue(*this, Setting->PrimaryData.Tag, *OpenedValue);
+			}
+		}
+	}
+
+	ApplySettings();
+	UpdateAllSettings(false);
+	SetHasPendingChanges(false);
+	HideSettings();
+}
+
+void USettingsWidget::RestoreDefaultSettings()
+{
+	UGameUserSettings* GameUserSettings = USettingsUtilsLibrary::GetGameUserSettings();
+	if (!GameUserSettings)
+	{
+		return;
+	}
+
+	GameUserSettings->SetToDefaults();
+	UpdateAllSettings(false);
+	ApplySettings();
+	RefreshPendingChanges();
 }
 
 // Flip-flop opens and closes the Settings menu
@@ -920,11 +1273,14 @@ void USettingsWidget::TryFocusOnUI()
 		return;
 	}
 
-	static const FInputModeGameAndUI GameAndUI{};
+	FInputModeGameAndUI GameAndUI;
+	SetIsFocusable(true);
+	GameAndUI.SetWidgetToFocus(TakeWidget());
 	PlayerController->SetInputMode(GameAndUI);
 	PlayerController->SetShowMouseCursor(true);
 	PlayerController->bEnableClickEvents = true;
 	PlayerController->bEnableMouseOverEvents = true;
+	SetKeyboardFocus();
 }
 
 /* ---------------------------------------------------
@@ -1091,9 +1447,14 @@ void USettingsWidget::AddSetting(FSettingsPicker& Setting)
 int32 USettingsWidget::GetColumnIndexBySetting(const FSettingTag& SettingTag) const
 {
 	int32 ColumnIndex = 0;
-	for (const TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
+	for (const FName& OrderedTag : OrderedSettingTagsInternal)
 	{
-		const FSettingsPrimary& PrimaryData = RowIt.Value.PrimaryData;
+		const FSettingsPicker* Row = SettingsTableRowsInternal.Find(OrderedTag);
+		if (!Row)
+		{
+			continue;
+		}
+		const FSettingsPrimary& PrimaryData = Row->PrimaryData;
 		if (PrimaryData.bStartOnNextColumn)
 		{
 			++ColumnIndex;

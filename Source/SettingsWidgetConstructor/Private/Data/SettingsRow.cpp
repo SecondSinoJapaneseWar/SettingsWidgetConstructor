@@ -82,9 +82,37 @@ uint32 GetTypeHash(const FSettingsPrimary& Other)
 	const uint32 PaddingRightHash = GetTypeHash(Other.Padding.Right);
 	const uint32 PaddingBottomHash = GetTypeHash(Other.Padding.Bottom);
 	const uint32 LineHeightHash = GetTypeHash(Other.LineHeight);
+	const uint32 SortPriorityHash = GetTypeHash(Other.SortPriority);
 	const uint32 StartOnNextColumnHash = GetTypeHash(Other.bStartOnNextColumn);
+	const uint32 ApplyImmediatelyHash = GetTypeHash(Other.bApplyImmediately);
 	const uint32 SettingsToUpdateHash = GetTypeHash(Other.SettingsToUpdate.ToStringSimple());
-	return HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(HashCombine(TagHash, ObjectContextHash), SetterHash), GetterHash), CaptionHash), TooltipHash), PaddingLeftHash), PaddingTopHash), PaddingRightHash), PaddingBottomHash), LineHeightHash), StartOnNextColumnHash), SettingsToUpdateHash);
+	return HashCombine(
+		HashCombine(
+			HashCombine(
+				HashCombine(
+					HashCombine(
+						HashCombine(
+							HashCombine(
+								HashCombine(
+									HashCombine(
+										HashCombine(
+											HashCombine(
+												HashCombine(
+													HashCombine(
+														HashCombine(TagHash, ObjectContextHash),
+														SetterHash),
+													GetterHash),
+												CaptionHash),
+											TooltipHash),
+										PaddingLeftHash),
+									PaddingTopHash),
+								PaddingRightHash),
+							PaddingBottomHash),
+						LineHeightHash),
+					SortPriorityHash),
+				StartOnNextColumnHash),
+			ApplyImmediatelyHash),
+		SettingsToUpdateHash);
 }
 
 // Returns the pointer to one of the chosen in-game type

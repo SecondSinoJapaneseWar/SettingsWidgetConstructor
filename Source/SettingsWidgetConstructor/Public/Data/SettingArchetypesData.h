@@ -411,7 +411,7 @@ struct SETTINGSWIDGETCONSTRUCTOR_API FSettingsCustomWidget : public FSettingsDat
 	virtual void GetSettingValue(const USettingsWidget& SettingsWidget, const FSettingTag& Tag, FString& OutResult) const override;
 
 	/** Calls the Set function of the Settings Widget of this setting type. */
-	virtual void SetSettingValue(USettingsWidget& SettingsWidget, const FSettingTag& Tag, const FString& Value) override {}
+	virtual void SetSettingValue(USettingsWidget& SettingsWidget, const FSettingTag& Tag, const FString& Value) override;
 
 	/** Calls the Bind function of the Settings Widget of this setting type. */
 	virtual void BindSetting(USettingsWidget& SettingsWidget, const FSettingsPrimary& PrimaryData) override;

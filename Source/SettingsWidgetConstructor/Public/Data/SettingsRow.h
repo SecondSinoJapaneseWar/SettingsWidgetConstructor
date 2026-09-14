@@ -69,6 +69,10 @@ struct SETTINGSWIDGETCONSTRUCTOR_API FSettingsPrimary
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	float LineHeight = 48.f;
 
+	/** Stable display order across Data Tables. Lower values are shown first. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	int32 SortPriority = 0;
+
 	/** Set true to add new column starting from this setting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	bool bStartOnNextColumn = false;

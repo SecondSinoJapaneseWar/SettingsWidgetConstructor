@@ -12,6 +12,7 @@
 #include "Components/CheckBox.h"
 #include "Components/EditableTextBox.h"
 #include "Components/HorizontalBox.h"
+#include "Components/HorizontalBoxSlot.h"
 #include "Components/ScrollBox.h"
 #include "Components/SizeBox.h"
 #include "Components/Slider.h"
@@ -85,7 +86,7 @@ UPanelSlot* USettingSubWidget::Attach()
 			}
 			break;
 		case EMyVerticalAlignment::Footer:
-			ParentWidget = GetSettingsWidgetChecked().GetFooterVerticalBox();
+			ParentWidget = GetSettingsWidgetChecked().GetFooterPanel();
 			break;
 		default: break;
 	}
@@ -96,6 +97,13 @@ UPanelSlot* USettingSubWidget::Attach()
 	}
 
 	ParentSlotInternal = ParentWidget->AddChild(this);
+
+	if (UHorizontalBoxSlot* HorizontalSlot = Cast<UHorizontalBoxSlot>(ParentSlotInternal))
+	{
+		HorizontalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
+		HorizontalSlot->SetHorizontalAlignment(HAlign_Fill);
+		HorizontalSlot->SetPadding(FMargin(6.0f, 0.0f));
+	}
 
 	ensureMsgf(ParentSlotInternal, TEXT("ASSERT: [%i] %s:\nFailed to attached the Setting subwidget with the next tag: '%s'"), __LINE__, *FString(__FUNCTION__), *GetSettingTag().ToString());
 	return ParentSlotInternal;
@@ -435,6 +443,27 @@ void USettingUserInput::OnAddSetting(const FSettingsPicker& Setting)
 void USettingCustomWidget::SetCustomWidgetData(const FSettingsCustomWidget& InCustomWidgetData)
 {
 	CustomWidgetDataInternal = InCustomWidgetData;
+}
+
+void USettingCustomWidget::GetCustomSettingValue_Implementation(FString& OutValue) const
+{
+	OutValue = GetPathName();
+}
+
+void USettingCustomWidget::SetCustomSettingValue_Implementation(const FString& InValue)
+{
+	// Legacy custom widgets represented the widget object itself and had no
+	// persistent value to restore.
+}
+
+void USettingCustomWidget::NotifyCustomSettingChanged()
+{
+	if (USettingsWidget* SettingsWidget = GetSettingsWidget())
+	{
+		SettingsWidget->UpdateSettingsByTags(GetSettingPrimaryRow().SettingsToUpdate);
+		SettingsWidget->OnAnySettingSet(GetSettingPrimaryRow());
+		SettingsWidget->PlayUIClickSFX();
+	}
 }
 
 // Is overridden to construct the custom widget

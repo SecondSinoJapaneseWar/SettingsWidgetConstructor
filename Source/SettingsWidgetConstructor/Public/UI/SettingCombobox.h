@@ -39,6 +39,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SettingSubWidget", meta = (AutoCreateRefTerm = "InComboboxData"))
 	void SetComboboxData(const FSettingsCombobox& InComboboxData);
 
+	/** Rebuilds the visible choices, preserving the selected index when possible. */
+	UFUNCTION(BlueprintCallable, Category = "SettingSubWidget", meta = (AutoCreateRefTerm = "InMembers"))
+	void SetComboboxMembers(const TArray<FText>& InMembers);
+
 	/** Internal function to change the value of this subwidget.
 	 * @warning is not blueprintable, don't call it directly, but use Setter function from the Settings Widget. */
 	void SetComboboxIndex(int32 InValue);

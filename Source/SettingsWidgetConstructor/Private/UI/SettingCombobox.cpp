@@ -19,6 +19,41 @@ void USettingCombobox::SetComboboxData(const FSettingsCombobox& InComboboxData)
 	ComboboxDataInternal = InComboboxData;
 }
 
+// Rebuild the visible choices when a dependent setting changes (monitor, window mode, etc.)
+void USettingCombobox::SetComboboxMembers(const TArray<FText>& InMembers)
+{
+	bool bMembersMatch = ComboboxDataInternal.Members.Num() == InMembers.Num();
+	for (int32 Index = 0; bMembersMatch && Index < InMembers.Num(); ++Index)
+	{
+		bMembersMatch = ComboboxDataInternal.Members[Index].EqualTo(InMembers[Index]);
+	}
+	if (bMembersMatch)
+	{
+		return;
+	}
+
+	if (!ComboboxWidget)
+	{
+		ComboboxDataInternal.Members = InMembers;
+		return;
+	}
+
+	const int32 PreviousSelection = ComboboxWidget->GetSelectedIndex();
+	ComboboxWidget->ClearOptions();
+	ComboitemWidgets.Empty();
+	ComboboxDataInternal.Members = InMembers;
+
+	for (const FText& Member : ComboboxDataInternal.Members)
+	{
+		CreateComboitem(Member);
+	}
+
+	if (ComboboxDataInternal.Members.IsValidIndex(PreviousSelection))
+	{
+		ComboboxWidget->SetSelectedIndex(PreviousSelection);
+	}
+}
+
 // Internal function to change the value of this subwidget
 void USettingCombobox::SetComboboxIndex(int32 InValue)
 {
@@ -185,8 +220,14 @@ void USettingCombobox::CreateComboitem(const FText& ItemTextValue)
 // Is called by an engine on attempting to add own comboitem widget to the combobox
 UWidget* USettingCombobox::OnConstructComboitem(FString ItemTextId)
 {
-	if (!ensureMsgf(!ItemTextId.IsEmpty(), TEXT("ASSERT: [%i] %hs:\n'!ItemTextId' is empty, can not construct comboitem!"), __LINE__, __FUNCTION__)
-		|| !ensureMsgf(!ComboitemWidgets.IsEmpty(), TEXT("ASSERT: [%i] %hs:\n'ComboitemWidgets' are empty, can not construct comboitem!"), __LINE__, __FUNCTION__))
+	// Clearing/rebuilding UComboBoxString legitimately asks for the empty
+	// selection once. It is not an option and needs no generated widget.
+	if (ItemTextId.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	if (!ensureMsgf(!ComboitemWidgets.IsEmpty(), TEXT("ASSERT: [%i] %hs:\n'ComboitemWidgets' are empty, can not construct comboitem!"), __LINE__, __FUNCTION__))
 	{
 		return nullptr;
 	}

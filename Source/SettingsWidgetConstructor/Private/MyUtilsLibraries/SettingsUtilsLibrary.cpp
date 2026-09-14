@@ -19,6 +19,11 @@
 // Returns the Settings widget from viewport
 USettingsWidget* USettingsUtilsLibrary::GetSettingsWidget(const UObject* WorldContextObject)
 {
+	if (const USettingsWidget* SettingsWidget = Cast<USettingsWidget>(WorldContextObject))
+	{
+		return const_cast<USettingsWidget*>(SettingsWidget);
+	}
+
 	UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContextObject, EGetWorldErrorMode::LogAndReturnNull) : nullptr;
 	return FSWCWidgetUtilsLibrary::FindWidgetOfClass<USettingsWidget>(World);
 }

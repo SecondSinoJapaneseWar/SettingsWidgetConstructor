@@ -200,8 +200,23 @@ TSubclassOf<USettingSubWidget> FSettingsCustomWidget::GetSubWidgetClass() const
 // Calls the Get function of the Settings Widget of this setting type
 void FSettingsCustomWidget::GetSettingValue(const USettingsWidget& SettingsWidget, const FSettingTag& Tag, FString& OutResult) const
 {
-	const TSoftObjectPtr<USettingCustomWidget> CustomWidget = SettingsWidget.GetCustomWidget(Tag);
-	OutResult = CustomWidget.IsValid() ? CustomWidget.ToSoftObjectPath().ToString() : TEXT("");
+	if (const USettingCustomWidget* CustomWidget = SettingsWidget.GetCustomWidget(Tag))
+	{
+		CustomWidget->GetCustomSettingValue(OutResult);
+	}
+	else
+	{
+		OutResult.Reset();
+	}
+}
+
+// Calls the custom widget to restore a serialized value
+void FSettingsCustomWidget::SetSettingValue(USettingsWidget& SettingsWidget, const FSettingTag& Tag, const FString& Value)
+{
+	if (USettingCustomWidget* CustomWidget = SettingsWidget.GetCustomWidget(Tag))
+	{
+		CustomWidget->SetCustomSettingValue(Value);
+	}
 }
 
 // Calls the Bind function of the Settings Widget of this setting type

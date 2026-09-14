@@ -451,6 +451,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "SettingSubWidget", meta = (AutoCreateRefTerm = "InCustomWidgetData"))
 	void SetCustomWidgetData(const FSettingsCustomWidget& InCustomWidgetData);
 
+	/**
+	 * Returns the serializable value owned by this custom setting.
+	 * The default implementation preserves the legacy custom-widget path value.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "SettingSubWidget")
+	void GetCustomSettingValue(FString& OutValue) const;
+	virtual void GetCustomSettingValue_Implementation(FString& OutValue) const;
+
+	/** Restores a value previously returned by GetCustomSettingValue. */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category = "SettingSubWidget", meta = (AutoCreateRefTerm = "InValue"))
+	void SetCustomSettingValue(const FString& InValue);
+	virtual void SetCustomSettingValue_Implementation(const FString& InValue);
+
+	/** Notifies the owning settings menu after this custom control changes its value. */
+	UFUNCTION(BlueprintCallable, Category = "SettingSubWidget")
+	void NotifyCustomSettingChanged();
+
 	/*********************************************************************************************
 	 * Data
 	 ********************************************************************************************* */
