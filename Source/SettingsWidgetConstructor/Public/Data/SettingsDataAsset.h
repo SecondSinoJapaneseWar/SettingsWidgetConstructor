@@ -135,10 +135,14 @@ public:
 	/*********************************************************************************************
 	 * Protected properties
 	 ********************************************************************************************* */
+
+	const TArray<FSettingsPageDefinition>& GetSettingsPages() const;
 protected:
 	/** The project's main Settings Data Table, is config property and has to be set manually. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Config, Category = "Settings Widget Constructor", meta = (BlueprintProtected, DisplayName = "Settings Data Table", ShowOnlyInnerProperties))
 	TSoftObjectPtr<const USettingsDataTable> SettingsDataTableInternal;
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Config, Category = "Settings Widget Constructor")
+	TArray<FSettingsPageDefinition> SettingsPagesInternal;
 
 	/** The sub-widget class of Button settings, is config property. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Config, Category = "Settings Widget Constructor", meta = (BlueprintProtected, DisplayName = "Button Class", ShowOnlyInnerProperties))

@@ -67,6 +67,8 @@ UPanelSlot* USettingSubWidget::Attach()
 	}
 
 	const FSettingsDataBase* SettingData = GetSettingData();
+	const USettingButton* SettingButtonWidget = Cast<USettingButton>(this);
+	const FSettingsButton* ButtonData = SettingButtonWidget ? &SettingButtonWidget->GetButtonData() : nullptr;
 	const EMyVerticalAlignment Alignment = SettingData ? SettingData->GetVerticalAlignment() : EMyVerticalAlignment::None;
 	if (!ensureMsgf(Alignment != EMyVerticalAlignment::None, TEXT("ASSERT: [%i] %s:\n'This widget '%s' can not be attached to the parent widget, because it has no alignment!"), __LINE__, *FString(__FUNCTION__), *GetName()))
 	{
@@ -87,6 +89,31 @@ UPanelSlot* USettingSubWidget::Attach()
 			break;
 		case EMyVerticalAlignment::Footer:
 			ParentWidget = GetSettingsWidgetChecked().GetFooterPanel();
+			if (ButtonData)
+			{
+				const int32 LeadingActionsIndex = 0;
+				const int32 CenterActionsIndex = 2;
+				const int32 TrailingActionsIndex = 4;
+				int32 ActionRegionIndex = CenterActionsIndex;
+				if (ButtonData->HorizontalAlignment == HAlign_Left)
+				{
+					ActionRegionIndex = LeadingActionsIndex;
+				}
+				else if (ButtonData->HorizontalAlignment == HAlign_Right)
+				{
+					ActionRegionIndex = TrailingActionsIndex;
+				}
+				if (UHorizontalBox* FooterActionBox = Cast<UHorizontalBox>(ParentWidget))
+				{
+					if (FooterActionBox->GetChildrenCount() >= 5)
+					{
+						if (UPanelWidget* ActionRegion = Cast<UPanelWidget>(FooterActionBox->GetChildAt(ActionRegionIndex)))
+						{
+							ParentWidget = ActionRegion;
+						}
+					}
+				}
+			}
 			break;
 		default: break;
 	}
@@ -100,8 +127,9 @@ UPanelSlot* USettingSubWidget::Attach()
 
 	if (UHorizontalBoxSlot* HorizontalSlot = Cast<UHorizontalBoxSlot>(ParentSlotInternal))
 	{
-		HorizontalSlot->SetSize(FSlateChildSize(ESlateSizeRule::Fill));
-		HorizontalSlot->SetHorizontalAlignment(HAlign_Fill);
+		const bool bFooterButton = Alignment == EMyVerticalAlignment::Footer && ButtonData;
+		HorizontalSlot->SetSize(FSlateChildSize(bFooterButton ? ESlateSizeRule::Automatic : ESlateSizeRule::Fill));
+		HorizontalSlot->SetHorizontalAlignment(bFooterButton ? ButtonData->HorizontalAlignment.GetValue() : HAlign_Fill);
 		HorizontalSlot->SetPadding(FMargin(6.0f, 0.0f));
 	}
 
@@ -135,7 +163,7 @@ void USettingSubWidget::OnAddSetting(const FSettingsPicker& Setting)
 
 	Attach();
 
-	ApplyTheme();
+	ApplyTheme(); 
 }
 
 // Returns the custom line height for this setting
@@ -184,7 +212,6 @@ void USettingButton::NativeConstruct()
 
 	if (ButtonWidget)
 	{
-		ButtonWidget->SetClickMethod(EButtonClickMethod::PreciseClick);
 		ButtonWidget->OnClicked.AddUniqueDynamic(this, &ThisClass::OnButtonPressed);
 
 		SlateButtonInternal = FSWCWidgetUtilsLibrary::GetSlateWidget<SButton>(ButtonWidget);

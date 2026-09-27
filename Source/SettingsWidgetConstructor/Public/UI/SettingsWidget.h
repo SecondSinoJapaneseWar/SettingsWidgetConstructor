@@ -6,6 +6,7 @@
 //---
 #include "Data/SettingsRow.h"
 //---
+#include "Components/Button.h"
 #include "SettingsWidget.generated.h"
 
 /**
@@ -303,6 +304,16 @@ protected:
 	TMap<FName, FString> OpenedSettingValuesInternal;
 
 	bool bHasPendingChangesInternal = false;
+	class UVerticalBox* SettingsPageNavigationInternal = nullptr;
+	class UWidgetSwitcher* SettingsPageSwitcherInternal = nullptr;
+	class UHorizontalBox* ActiveSettingsPageContentInternal = nullptr;
+	TMap<FName, class UHorizontalBox*> SettingsPageContentByIdInternal;
+	TMap<FName, int32> SettingsPageIndexByIdInternal;
+	TMap<FName, FName> SettingPageIdByTagInternal;
+	TMap<FName, int32> SettingColumnIndexByTagInternal;
+	TMap<FName, int32> SettingsPageColumnCountsInternal;
+	FName ActiveSettingsPageIdInternal = NAME_None;
+	bool bHasCategoryPagesInternal = false;
 	bool bIsSynchronizingSettingsInternal = false;
 	bool bSuppressChangeNotificationsInternal = false;
 
@@ -420,6 +431,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Settings Widget Constructor|Columns", meta = (AutoCreateRefTerm = "SettingTag"))
 	FORCEINLINE USettingColumn* GetColumnBySetting(const FSettingTag& SettingTag) const { return GetColumnByIndex(GetColumnIndexBySetting(SettingTag)); }
 
+
+	void SetActiveSettingsPage(int32 PageIndex);
+
+	bool BuildSettingsPageLayout();
+
+	void UpdateSettingsWindowLayout();
 protected:
 	/** Contains all setting columns. */
 	UPROPERTY(VisibleDefaultsOnly, BlueprintReadOnly, Transient, Category = "Settings Widget Constructor|Columns", meta = (BlueprintProtected, DisplayName = "Columns"))
@@ -461,3 +478,13 @@ protected:
 		}																			\
 		SettingsWidget->UpdateSettingsByTags(InFunctionName##SettingTag);				\
 	} while (0)
+
+UCLASS()
+class SETTINGSWIDGETCONSTRUCTOR_API USettingsPageNavigationButton : public UButton
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION()
+	void HandleClicked();
+};

@@ -37,6 +37,8 @@ struct SETTINGSWIDGETCONSTRUCTOR_API FSettingsPrimary
 	/** The tag of the setting. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite)
 	FSettingTag Tag = FSettingTag::EmptySettingTag;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite)
+	FName PageId = NAME_None;
 
 	/** The static function to obtain object to call Setters and Getters.
 	  * The FunctionContextTemplate meta will contain a name of one UFunctionPickerTemplate delegate. */

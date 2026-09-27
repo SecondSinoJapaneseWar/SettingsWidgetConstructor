@@ -212,3 +212,18 @@ struct SETTINGSWIDGETCONSTRUCTOR_API FMiscThemeData
 	UPROPERTY(EditDefaultsOnly, BlueprintReadWrite)
 	ESlateVisibility MenuBorderVisibility = ESlateVisibility::Visible;
 };
+
+USTRUCT(BlueprintType)
+struct SETTINGSWIDGETCONSTRUCTOR_API FSettingsPageDefinition
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config)
+	FName PageId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config)
+	FText Caption;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Config)
+	int32 SortPriority = 0;
+};

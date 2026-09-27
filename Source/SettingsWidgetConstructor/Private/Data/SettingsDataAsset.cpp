@@ -8,6 +8,7 @@
 #include "DataRegistry.h"
 #include "Engine/Engine.h"
 #include "Misc/CoreDelegates.h"
+#include "../../public/data/settingsdataasset.h"
 //---
 #include UE_INLINE_GENERATED_CPP_BY_NAME(SettingsDataAsset)
 
@@ -59,3 +60,8 @@ void USettingsDataAsset::PostEditChangeProperty(FPropertyChangedEvent& PropertyC
 	}
 }
 #endif // WITH_EDITOR
+
+const TArray<FSettingsPageDefinition>& USettingsDataAsset::GetSettingsPages() const
+{
+	return SettingsPagesInternal;
+}

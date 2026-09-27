@@ -158,7 +158,9 @@ void USettingComboitem::ApplyTheme_Implementation(const FSettingsCombobox& Combo
 
 	const USettingsDataAsset& SettingsDataAsset = USettingsDataAsset::Get();
 	const FMiscThemeData& MiscThemeData = SettingsDataAsset.GetMiscThemeData();
-	ItemTextWidget->SetFont(MiscThemeData.TextElementFont);
+	FSlateFontInfo ComboItemFont = MiscThemeData.TextElementFont;
+	ComboItemFont.Size = 20.0f;
+	ItemTextWidget->SetFont(ComboItemFont);
 	ItemTextWidget->SetColorAndOpacity(MiscThemeData.TextElementColor);
 
 	checkf(ItemBackgroundWidget, TEXT("ERROR: [%i] %hs:\n'ItemBackgroundWidget' is null!"), __LINE__, __FUNCTION__);
@@ -243,5 +245,15 @@ UWidget* USettingCombobox::OnConstructComboitem(FString ItemTextId)
 	});
 
 	ensureMsgf(FoundComboitemPtr, TEXT("ASSERT: [%i] %hs:\nFailed to find the comboitem widget by the given Text Id: '%s'; default widget without styling will be created!"), __LINE__, __FUNCTION__, *ItemTextId);
-	return FoundComboitemPtr ? *FoundComboitemPtr : nullptr;
+	if (!FoundComboitemPtr || !*FoundComboitemPtr)
+		{
+			return nullptr;
+		}
+		USettingComboitem* ItemWidget = CreateWidget<USettingComboitem>(this, (*FoundComboitemPtr)->GetClass());
+		if (ItemWidget)
+		{
+			ItemWidget->ApplyTheme(ComboboxDataInternal);
+			ItemWidget->SetItemTextValue((*FoundComboitemPtr)->GetItemTextValue());
+		}
+		return ItemWidget;
 }

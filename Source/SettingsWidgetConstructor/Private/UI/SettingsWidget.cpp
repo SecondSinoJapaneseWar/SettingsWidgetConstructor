@@ -24,6 +24,12 @@
 #include "GameFramework/GameUserSettings.h"
 #include "GameplayTagsManager.h"
 #include "InputCoreTypes.h"
+#include "../../public/ui/settingswidget.h"
+#include "Components/HorizontalBoxSlot.h"
+#include "Components/VerticalBox.h"
+#include "Components/WidgetSwitcher.h"
+#include "Components/TextBlock.h"
+#include "Components/OverlaySlot.h"
 
 #if WITH_EDITOR
 #include "Editor.h"
@@ -867,10 +873,13 @@ void USettingsWidget::ConstructSettings()
 	}
 
 	CacheTable();
+	UpdateSettingsWindowLayout();
 
 	// BP implementation to cache some data before creating subwidgets
 	OnConstructSettings();
 	EnsureFooterButtonBox();
+		UHorizontalBox* RootContentHorizontalBox = ContentHorizontalBox;
+		BuildSettingsPageLayout();
 
 	FGameplayTagContainer AddedSettings;
 	for (const FName& OrderedTag : OrderedSettingTagsInternal)
@@ -885,6 +894,8 @@ void USettingsWidget::ConstructSettings()
 		AddSetting(SettingRef);
 		AddedSettings.AddTag(SettingRef.PrimaryData.Tag);
 	}
+	ContentHorizontalBox = RootContentHorizontalBox;
+	ActiveSettingsPageContentInternal = nullptr;
 
 	UpdateSettingsByTags(AddedSettings, /*bLoadFromConfig*/ true);
 
@@ -930,7 +941,7 @@ void USettingsWidget::RemoveAllSettings()
 	for (TTuple<FName, FSettingsPicker>& RowIt : SettingsTableRowsInternal)
 	{
 		USettingSubWidget* SubWidget = RowIt.Value.PrimaryData.SettingSubWidget.Get();
-		if (ensureMsgf(SubWidget, TEXT("ASSERT: [%i] %s:\n'SubWidget' is not valid!"), __LINE__, *FString(__FUNCTION__)))
+		if (IsValid(SubWidget))
 		{
 			FSWCWidgetUtilsLibrary::DestroyWidget(*SubWidget);
 		}
@@ -948,6 +959,28 @@ void USettingsWidget::RemoveAllSettings()
 		}
 	}
 	ColumnsInternal.Empty();
+		if (SettingsPageNavigationInternal)
+		{
+			SettingsPageNavigationInternal->ClearChildren();
+			SettingsPageNavigationInternal->SetVisibility(ESlateVisibility::Collapsed);
+			if (UPanelWidget* NavigationContainer = SettingsPageNavigationInternal->GetParent())
+			{
+				NavigationContainer->SetVisibility(ESlateVisibility::Collapsed);
+			}
+		}
+		if (SettingsPageSwitcherInternal)
+		{
+			SettingsPageSwitcherInternal->ClearChildren();
+			SettingsPageSwitcherInternal->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		ActiveSettingsPageContentInternal = nullptr;
+		SettingsPageContentByIdInternal.Empty();
+		SettingsPageIndexByIdInternal.Empty();
+		SettingsPageColumnCountsInternal.Empty();
+		SettingPageIdByTagInternal.Empty();
+		SettingColumnIndexByTagInternal.Empty();
+		ActiveSettingsPageIdInternal = NAME_None;
+		bHasCategoryPagesInternal = false;
 }
 
 // Is called when In-Game menu became opened or closed
@@ -968,6 +1001,11 @@ void USettingsWidget::EnsureFooterButtonBox()
 		return;
 	}
 
+	FooterButtonBoxInternal = Cast<UHorizontalBox>(WidgetTree->FindWidget(TEXT("SettingsFooterActions")));
+	if (FooterButtonBoxInternal)
+	{
+		return;
+	}
 	FooterButtonBoxInternal = WidgetTree->ConstructWidget<UHorizontalBox>(
 		UHorizontalBox::StaticClass(), TEXT("SettingsFooterActions"));
 	if (UVerticalBoxSlot* FooterSlot = FooterVerticalBox->AddChildToVerticalBox(FooterButtonBoxInternal))
@@ -1165,6 +1203,7 @@ void USettingsWidget::OpenSettings()
 	}
 
 	TryConstructSettings();
+	UpdateSettingsWindowLayout();
 
 	TryRebindDeferredContexts();
 
@@ -1428,11 +1467,44 @@ void USettingsWidget::AddSetting(FSettingsPicker& Setting)
 	}
 
 	FSettingsPrimary& PrimaryData = Setting.PrimaryData;
+		if (bHasCategoryPagesInternal)
+		{
+			const FName SettingTagName = PrimaryData.Tag.GetTagName();
+			FName PageId = SettingPageIdByTagInternal.FindRef(SettingTagName);
+			if (PageId.IsNone())
+			{
+				PageId = SettingsPageIndexByIdInternal.Contains(PrimaryData.PageId) ? PrimaryData.PageId : FName(TEXT("Other"));
+				if (!SettingsPageIndexByIdInternal.Contains(PageId) && !SettingsPageIndexByIdInternal.IsEmpty())
+				{
+					PageId = SettingsPageIndexByIdInternal.CreateConstIterator()->Key;
+				}
+				SettingPageIdByTagInternal.Add(SettingTagName, PageId);
+			}
+			ActiveSettingsPageContentInternal = SettingsPageContentByIdInternal.FindRef(PageId);
+			if (ActiveSettingsPageContentInternal)
+			{
+				ContentHorizontalBox = ActiveSettingsPageContentInternal;
+			}
+		}
 
-	if (Setting.PrimaryData.bStartOnNextColumn)
-	{
-		AddColumn(GetColumnIndexBySetting(PrimaryData.Tag));
-	}
+	if (ChosenData->GetVerticalAlignment() == EMyVerticalAlignment::Content)
+		{
+			if (bHasCategoryPagesInternal)
+			{
+				const FName PageId = SettingPageIdByTagInternal.FindChecked(PrimaryData.Tag.GetTagName());
+				int32& PageColumnEnd = SettingsPageColumnCountsInternal.FindChecked(PageId);
+				if (PageColumnEnd == 0 || PrimaryData.bStartOnNextColumn)
+				{
+					AddColumn(ColumnsInternal.Num());
+					PageColumnEnd = ColumnsInternal.Num();
+				}
+				SettingColumnIndexByTagInternal.Add(PrimaryData.Tag.GetTagName(), PageColumnEnd - 1);
+			}
+			else if (ColumnsInternal.IsEmpty() || PrimaryData.bStartOnNextColumn)
+			{
+				AddColumn(ColumnsInternal.Num());
+			}
+		}
 
 	USettingSubWidget* SettingSubWidget = CreateSettingSubWidget(PrimaryData, ChosenData->GetSubWidgetClass());
 	checkf(SettingSubWidget, TEXT("ERROR: [%i] %s:\n'SettingSubWidget' is null!"), __LINE__, *FString(__FUNCTION__));
@@ -1446,6 +1518,10 @@ void USettingsWidget::AddSetting(FSettingsPicker& Setting)
 // Returns the index of column for a Setting by specified tag or -1 if not found
 int32 USettingsWidget::GetColumnIndexBySetting(const FSettingTag& SettingTag) const
 {
+	if (const int32* CachedColumnIndex = SettingColumnIndexByTagInternal.Find(SettingTag.GetTagName()))
+	{
+		return *CachedColumnIndex;
+	}
 	int32 ColumnIndex = 0;
 	for (const FName& OrderedTag : OrderedSettingTagsInternal)
 	{
@@ -1519,5 +1595,253 @@ void USettingsWidget::BindOnSettingsDataRegistryChanged()
 	if (!SettingsDataRegistryDelegate.IsBoundToObject(this))
 	{
 		SettingsDataRegistryDelegate.AddUObject(this, &ThisClass::OnSettingsDataRegistryChanged);
+	}
+}
+
+void USettingsWidget::SetActiveSettingsPage(int32 PageIndex)
+{
+	if (!SettingsPageSwitcherInternal || SettingsPageIndexByIdInternal.IsEmpty())
+	{
+		return;
+	}
+	
+	const int32 ActivePageIndex = FMath::Clamp(PageIndex, 0, SettingsPageIndexByIdInternal.Num() - 1);
+	const int32 PreviousPageIndex = SettingsPageSwitcherInternal->GetActiveWidgetIndex();
+	const FMiscThemeData& MiscThemeData = USettingsDataAsset::Get().GetMiscThemeData();
+	
+	FLinearColor ActiveTint = MiscThemeData.TextHeaderColor.GetSpecifiedColor() * 0.2f;
+	ActiveTint.A = 1.0f;
+	
+	const auto SetNavigationButtonActive = [this, &MiscThemeData, &ActiveTint](int32 NavigationIndex, bool bIsActive)
+	{
+		if (!SettingsPageNavigationInternal)
+		{
+			return;
+		}
+		USettingsPageNavigationButton* NavigationButton = Cast<USettingsPageNavigationButton>(
+			SettingsPageNavigationInternal->GetChildAt(NavigationIndex));
+		if (!NavigationButton)
+		{
+			return;
+		}
+	
+		FButtonStyle NavigationButtonStyle = NavigationButton->GetStyle();
+		FSlateBrush NormalBrush = NavigationButtonStyle.Normal;
+				FSlateBrush HoveredBrush = NavigationButtonStyle.Hovered;
+				FSlateBrush PressedBrush = NavigationButtonStyle.Pressed;
+				NormalBrush.TintColor = bIsActive ? FSlateColor (ActiveTint)
+		: MiscThemeData.ThemeColorNormal;
+				HoveredBrush.TintColor = MiscThemeData.ThemeColorHover;
+				PressedBrush.TintColor = MiscThemeData.ThemeColorExtra;
+			NavigationButtonStyle.SetNormal(NormalBrush);
+			NavigationButtonStyle.SetHovered(HoveredBrush);
+			NavigationButtonStyle.SetPressed(PressedBrush);
+			NavigationButtonStyle.SetDisabled(NormalBrush);
+		
+		NavigationButton->SetStyle(NavigationButtonStyle);
+		if (UTextBlock* CaptionText = Cast<UTextBlock>(NavigationButton->GetContent()))
+		{
+			CaptionText->SetColorAndOpacity(
+				bIsActive ? MiscThemeData.TextHeaderColor : MiscThemeData.TextAndCaptionColor);
+		}
+	};
+	
+	if (PreviousPageIndex >= 0 && PreviousPageIndex != ActivePageIndex)
+	{
+		SetNavigationButtonActive(PreviousPageIndex, false);
+	}
+	SetNavigationButtonActive(ActivePageIndex, true);
+	SettingsPageSwitcherInternal->SetActiveWidgetIndex(ActivePageIndex);
+	if (const FName* ActivePageId = SettingsPageIndexByIdInternal.FindKey(ActivePageIndex))
+	{
+		ActiveSettingsPageIdInternal = *ActivePageId;
+	}
+}
+
+void USettingsPageNavigationButton::HandleClicked()
+{
+	UPanelWidget* ParentPanel = GetParent();
+	if (!ParentPanel)
+	{
+		return;
+	}
+	const int32 PageIndex = ParentPanel->GetChildIndex(this);
+	if (PageIndex == INDEX_NONE)
+	{
+		return;
+	}
+	if (USettingsWidget* SettingsWidget = GetTypedOuter<USettingsWidget>())
+	{
+		SettingsWidget->SetActiveSettingsPage(PageIndex);
+	}
+}
+
+bool USettingsWidget::BuildSettingsPageLayout()
+{
+	SettingsPageSwitcherInternal = nullptr;
+	SettingsPageNavigationInternal = nullptr;
+	ActiveSettingsPageContentInternal = nullptr;
+	SettingsPageContentByIdInternal.Empty();
+	SettingsPageIndexByIdInternal.Empty();
+	SettingsPageColumnCountsInternal.Empty();
+	SettingPageIdByTagInternal.Empty();
+	SettingColumnIndexByTagInternal.Empty();
+	bHasCategoryPagesInternal = false;
+	
+	if (!WidgetTree || !ContentHorizontalBox)
+	{
+		return false;
+	}
+	
+	const FMiscThemeData& WindowTitleTheme = USettingsDataAsset::Get().GetMiscThemeData();
+	if (UTextBlock* SettingsWindowTitle = Cast<UTextBlock>(
+		WidgetTree->FindWidget(TEXT("SettingsWindowTitle"))))
+	{
+		SettingsWindowTitle->SetFont(WindowTitleTheme.TextHeaderFont);
+		SettingsWindowTitle->SetColorAndOpacity(WindowTitleTheme.TextHeaderColor);
+	}
+	
+	SettingsPageNavigationInternal = Cast<UVerticalBox>(
+		WidgetTree->FindWidget(TEXT("SettingsPageNavigation")));
+	SettingsPageSwitcherInternal = Cast<UWidgetSwitcher>(
+		WidgetTree->FindWidget(TEXT("SettingsPageSwitcher")));
+	const TArray<FSettingsPageDefinition>& PageDefinitions = USettingsDataAsset::Get().GetSettingsPages();
+	if (!SettingsPageNavigationInternal || !SettingsPageSwitcherInternal || PageDefinitions.IsEmpty())
+	{
+		if (SettingsPageNavigationInternal)
+		{
+			SettingsPageNavigationInternal->ClearChildren();
+			SettingsPageNavigationInternal->SetVisibility(ESlateVisibility::Collapsed);
+			if (UPanelWidget* NavigationContainer = SettingsPageNavigationInternal->GetParent())
+			{
+				NavigationContainer->SetVisibility(ESlateVisibility::Collapsed);
+			}
+		}
+		if (SettingsPageSwitcherInternal)
+		{
+			SettingsPageSwitcherInternal->ClearChildren();
+			SettingsPageSwitcherInternal->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		return false;
+	}
+	
+	 UUserWidget* PageLayoutTemplate = Cast<UUserWidget>(
+			WidgetTree->FindWidget(TEXT("SettingsPageTemplate")));
+		USettingsPageNavigationButton* NavigationButtonTemplate =
+			Cast<USettingsPageNavigationButton>(WidgetTree->FindWidget(TEXT("SettingsPageNavigationButtonTemplate")));
+		UTextBlock* NavigationCaptionTemplate = NavigationButtonTemplate
+			? Cast<UTextBlock>(NavigationButtonTemplate->GetContent())
+			: nullptr;
+		const UVerticalBoxSlot* NavigationButtonTemplateSlot = NavigationButtonTemplate
+			? Cast<UVerticalBoxSlot>(NavigationButtonTemplate->Slot)
+			: nullptr;
+		if (!PageLayoutTemplate || !NavigationButtonTemplate || !NavigationCaptionTemplate)
+		{
+			return false;
+		}
+	
+		UClass *const PageLayoutWidgetClass = PageLayoutTemplate->GetClass();
+		const FButtonStyle NavigationButtonStyle = NavigationButtonTemplate->GetStyle();
+		const FSlateFontInfo NavigationFont = NavigationCaptionTemplate->GetFont();
+		const FSlateColor NavigationCaptionColor = NavigationCaptionTemplate->GetColorAndOpacity();
+		const FMargin NavigationButtonPadding = NavigationButtonTemplateSlot
+			? NavigationButtonTemplateSlot->GetPadding()
+			: FMargin(0.0f, 0.0f, 0.0f, 8.0f);
+		const EHorizontalAlignment NavigationButtonAlignment = NavigationButtonTemplateSlot
+			? NavigationButtonTemplateSlot->GetHorizontalAlignment()
+			: HAlign_Fill; SettingsPageNavigationInternal->ClearChildren();
+	SettingsPageSwitcherInternal->ClearChildren();
+	SettingsPageNavigationInternal->SetVisibility(ESlateVisibility::Visible);
+	SettingsPageSwitcherInternal->SetVisibility(ESlateVisibility::Visible);
+	if (UPanelWidget* NavigationContainer = SettingsPageNavigationInternal->GetParent())
+	{
+		NavigationContainer->SetVisibility(ESlateVisibility::Visible);
+	}
+	
+	TArray<FSettingsPageDefinition> OrderedPages = PageDefinitions;
+	OrderedPages.Sort([](const FSettingsPageDefinition& Left, const FSettingsPageDefinition& Right)
+	{
+		return Left.SortPriority == Right.SortPriority
+			? Left.PageId.LexicalLess(Right.PageId)
+			: Left.SortPriority < Right.SortPriority;
+	});
+	const FMiscThemeData& MiscTheme = USettingsDataAsset::Get().GetMiscThemeData();
+	
+	
+	for (const FSettingsPageDefinition& PageDefinition : OrderedPages)
+	{
+		if (PageDefinition.PageId.IsNone() || SettingsPageIndexByIdInternal.Contains(PageDefinition.PageId))
+		{
+			continue;
+		}
+		const int32 PageIndex = SettingsPageIndexByIdInternal.Num();
+			UUserWidget* PageLayout = CreateWidget<UUserWidget>(
+				GetOwningPlayer(),
+				PageLayoutWidgetClass);
+						if(!PageLayout || !PageLayout->WidgetTree) {
+							continue;
+						}
+						UWidgetTree* PageWidgetTree = PageLayout->WidgetTree;
+			UTextBlock* PageTitleText = Cast<UTextBlock>(
+				PageWidgetTree->FindWidget(TEXT("SettingsPageTitle")));
+			UHorizontalBox* PageContent = Cast<UHorizontalBox>(
+				PageWidgetTree->FindWidget(TEXT("SettingsPageContent")));
+			 if (!PageTitleText || !PageContent)
+					{
+						continue;
+					} PageTitleText->SetText(PageDefinition.Caption);
+			
+			SettingsPageSwitcherInternal->AddChild(PageLayout);
+			SettingsPageIndexByIdInternal.Add(PageDefinition.PageId, PageIndex);
+			SettingsPageContentByIdInternal.Add(PageDefinition.PageId, PageContent);
+			SettingsPageColumnCountsInternal.Add(PageDefinition.PageId, 0);
+	
+		USettingsPageNavigationButton* NavigationButton = WidgetTree->ConstructWidget<USettingsPageNavigationButton>(
+			USettingsPageNavigationButton::StaticClass(),
+			*FString::Printf(TEXT("SettingsPageNavigationButton_%s"), *PageDefinition.PageId.ToString()));
+		NavigationButton->SetStyle(NavigationButtonStyle);
+		NavigationButton->OnClicked.AddDynamic(NavigationButton, &USettingsPageNavigationButton::HandleClicked);
+		UTextBlock* CaptionText = WidgetTree->ConstructWidget<UTextBlock>(
+			UTextBlock::StaticClass(),
+			*FString::Printf(TEXT("SettingsPageCaption_%s"), *PageDefinition.PageId.ToString()));
+		CaptionText->SetText(PageDefinition.Caption);
+		CaptionText->SetFont(NavigationFont);
+		CaptionText->SetColorAndOpacity(NavigationCaptionColor);
+		NavigationButton->AddChild(CaptionText);
+		if (UVerticalBoxSlot* NavigationButtonSlot = SettingsPageNavigationInternal->AddChildToVerticalBox(NavigationButton))
+		{
+			NavigationButtonSlot->SetPadding(NavigationButtonPadding);
+			NavigationButtonSlot->SetHorizontalAlignment(NavigationButtonAlignment);
+		}
+	}
+	
+	bHasCategoryPagesInternal = !SettingsPageIndexByIdInternal.IsEmpty();
+	if (!bHasCategoryPagesInternal)
+	{
+		SettingsPageNavigationInternal->ClearChildren();
+		SettingsPageSwitcherInternal->ClearChildren();
+		SettingsPageNavigationInternal->SetVisibility(ESlateVisibility::Collapsed);
+		SettingsPageSwitcherInternal->SetVisibility(ESlateVisibility::Collapsed);
+		if (UPanelWidget* NavigationContainer = SettingsPageNavigationInternal->GetParent())
+		{
+			NavigationContainer->SetVisibility(ESlateVisibility::Collapsed);
+		}
+		return false;
+	}
+	
+	SetActiveSettingsPage(0);
+	return true;
+}
+
+void USettingsWidget::UpdateSettingsWindowLayout()
+{
+	
+
+	if (UWidget* MenuVBox = WidgetTree->FindWidget(TEXT("Menu VBox")))
+	{
+		if (UOverlaySlot* MenuSlot = Cast<UOverlaySlot>(MenuVBox->Slot))
+		{
+			MenuSlot->SetPadding(USettingsDataAsset::Get().GetSettingsPadding());
+		}
 	}
 }
